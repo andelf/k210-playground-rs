@@ -1,0 +1,15 @@
+[package]
+name = "maixduino-playground"
+version = "0.1.0"
+authors = ["Andelf <andelf@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+
+
+[dev-dependencies]
+panic-halt = "0.2.0"
+riscv = "0.6"
+riscv-rt = "0.8"
+# outdated in crates.io
+k210-hal = { git = "https://github.com/riscv-rust/k210-hal" }
