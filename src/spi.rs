@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 use embedded_hal::spi;
 pub use embedded_hal::spi::{Mode, Phase, Polarity, MODE_0, MODE_1, MODE_2, MODE_3};
 use k210_hal::clock::Clocks;
@@ -23,14 +25,15 @@ pub enum Error {
     _Extensible,
 }
 
-pub struct Spi<SPI, PIN> {
+pub struct Spi<SPI, PIN, FrameSize> {
     spi: SPI,
     cs: PIN,
+    _marker: PhantomData<FrameSize>,
 }
 
 // cs: SIPEED_ST7789_SS
 // #define SIPEED_ST7789_SS           3
-impl<PIN> Spi<SPI0, PIN> {
+impl<PIN> Spi<SPI0, PIN, u8> {
     /// spi_init
     pub fn spi0(
         spi: SPI0,
@@ -70,7 +73,7 @@ impl<PIN> Spi<SPI0, PIN> {
         let default_tmod = crate::pac::spi0::ctrlr0::TMOD_A::TRANS_RECV;
         let frame_format = frame_format_to_pac(frame_format);
 
-        let data_bit_length = 8; // TODO: support more
+        let data_bit_length = 8;
 
         unsafe {
             if spi.baudr.read().bits() == 0 {
@@ -86,18 +89,18 @@ impl<PIN> Spi<SPI0, PIN> {
             spi.ctrlr0.write(|w| {
                 w.work_mode()
                     .variant(work_mode)
-                    .tmod()
-                    .variant(default_tmod)
                     .frame_format()
                     .variant(frame_format)
                     .data_length()
                     .bits(data_bit_length - 1)
             });
 
+            // Valid only when SSI_SPI_MODE is either set to Dual or Quad or Octal mode.
             spi.spi_ctrlr0.reset();
             spi.endian.write(|w| w.bits(endian as u32));
 
             // fake
+            /*
             spi.spi_ctrlr0.write(|w| {
                 w.aitm()
                     .as_frame_format()
@@ -107,10 +110,14 @@ impl<PIN> Spi<SPI0, PIN> {
                     .bits(2)
                     .wait_cycles()
                     .bits(0)
-            });
+            }); */
         }
 
-        Spi { spi, cs }
+        Spi {
+            spi,
+            cs,
+            _marker: PhantomData,
+        }
     }
 
     // TODO: use Clocks
@@ -125,6 +132,43 @@ impl<PIN> Spi<SPI0, PIN> {
         };
         unsafe {
             self.spi.baudr.write(|w| w.bits(br));
+        }
+    }
+
+    // fn set_tmod(&mut self, )
+
+    pub fn send_data_normal(&mut self, tx: &[u8]) {
+        self.spi
+            .ctrlr0
+            .modify(|_, w| w.tmod().variant(crate::pac::spi0::ctrlr0::TMOD_A::TRANS));
+        unsafe {
+            self.spi.ssienr.write(|w| w.bits(0x01));
+            self.spi.ser.write(|w| w.bits(1 << 3)); // chip_select
+        }
+
+        let mut tx_len = tx.len() as u32;
+        let mut i = 0;
+        while tx_len > 0 {
+            let mut fifo_len = self.spi.txflr.read().bits();
+            fifo_len = u32::min(fifo_len, tx_len);
+            // SPI_TRANS_CHAR
+            for _ in 0..fifo_len {
+                unsafe {
+                    self.spi.dr[0].write(|w| w.bits(tx[i] as u32));
+                }
+                i += 1;
+            }
+            tx_len -= fifo_len;
+        }
+
+        // bit 2: TFE, Transmit FIFO Empty
+        //     0x0 NOT_EMPTY
+        //     0x1 EMPTY
+        // bit 0: BUSY, SSI Busy Flag
+        while self.spi.sr.read().bits() & 0b101 != 0b100 {}
+        unsafe {
+            self.spi.ser.write(|w| w.bits(0x00));
+            self.spi.ssienr.write(|w| w.bits(0x00));
         }
     }
 
@@ -169,8 +213,9 @@ impl<PIN> Spi<SPI0, PIN> {
     }
 }
 
+/*
 // share almost the same as SPI0
-impl<PIN> Spi<SPI1, PIN> {
+impl<PIN> Spi<SPI1, PIN, u8> {
     pub fn spi1(
         spi: SPI1,
         cs: PIN,
@@ -313,8 +358,11 @@ impl<PIN> Spi<SPI1, PIN> {
         }
     }
 }
+*/
 
-impl<PIN: fpioa::Mode<functions::SPI0_SS3>> embedded_hal::spi::FullDuplex<u8> for Spi<SPI0, PIN> {
+impl<PIN: fpioa::Mode<functions::SPI0_SS3>> embedded_hal::spi::FullDuplex<u8>
+    for Spi<SPI0, PIN, u8>
+{
     /// An enumeration of SPI errors
     type Error = Error;
 
@@ -414,7 +462,7 @@ impl<PIN: fpioa::Mode<functions::SPI0_SS3>> embedded_hal::blocking::spi::write::
 }*/
 
 impl<PIN: fpioa::Mode<functions::SPI0_SS3>> embedded_hal::blocking::spi::Write<u8>
-    for Spi<SPI0, PIN>
+    for Spi<SPI0, PIN, u8>
 {
     type Error = Error;
     fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
@@ -459,6 +507,7 @@ impl<PIN: fpioa::Mode<functions::SPI0_SS3>> embedded_hal::blocking::spi::Write<u
     }
 }
 
+/*
 impl<PIN: fpioa::Mode<functions::SPI1_SS3>> embedded_hal::blocking::spi::Write<u8>
     for Spi<SPI1, PIN>
 {
@@ -504,13 +553,21 @@ impl<PIN: fpioa::Mode<functions::SPI1_SS3>> embedded_hal::blocking::spi::Write<u
         }*/
     }
 }
+*/
 
-/// 多线模式
+// NOTE: do not support data frame size other than u8, u16, u32
+// Valid value for device: 4 to 32
+
+/// SPI Frame Format
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FrameFormat {
+    /// Standard SPI Frame
     Standard,
+    /// Dual SPI Frame
     Dual,
+    /// Quad SPI Frame
     Quad,
+    /// Octal SPI Frame
     Octal,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
