@@ -1,12 +1,10 @@
 [package]
-name = "maixduino-playground"
+name = "k210-playground"
 version = "0.1.0"
 authors = ["Andelf <andelf@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-
-
 panic-halt = "0.2.0"
 riscv = "0.6"
 riscv-rt = "0.8"
